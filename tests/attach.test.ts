@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { attach, type Shared } from "../src/attach.ts";
 import { portFor } from "../src/port.ts";
-import type { VimEditorCapability } from "../src/status.ts";
+import type { VimEditorCapability, VimEditorSelection } from "../src/status.ts";
 import { keybindings as createKeybindings, theme, tui } from "./fixtures.ts";
 
 /** What the editor publishes for other extensions. */
@@ -653,22 +653,45 @@ test.each(["bottom-right", "none"] as const)(
   (position) => {
     const { editor, type } = setup(position);
     editor.setText("foo bar");
-    const steps: [string[], string, string, string][] = [
+    const steps: [string[], string, string, string, object?][] = [
       [[], "insert", "", "INSERT"],
       [["\x1b"], "normal", "", "NORMAL"],
       [["2", "d"], "normal", "2d", "2d"],
       [["\x1b", '"', "+"], "normal", '"+', '"+'],
-      [["\x1b", "v"], "visual", "", "VISUAL"],
-      [["V"], "visual-line", "", "VISUAL LINE"],
-      [["\x16"], "visual-block", "", "VISUAL BLOCK"],
+      [
+        ["\x1b", "v"],
+        "visual",
+        "",
+        "VISUAL",
+        { kind: "char", anchor: 6, head: 7 },
+      ],
+      [
+        ["V"],
+        "visual-line",
+        "",
+        "VISUAL LINE",
+        { kind: "line", anchor: 6, head: 6 },
+      ],
+      [
+        ["\x16"],
+        "visual-block",
+        "",
+        "VISUAL BLOCK",
+        { kind: "block", anchor: 6, head: 6, spans: [{ from: 6, to: 7 }] },
+      ],
       [["\x1b", "R"], "replace", "", "REPLACE"],
       [["\x1b", ":", "q"], "normal", ":q", ":q"],
       [["\x1b", "/", "f", "o", "o"], "normal", "/foo", "/foo"],
     ];
-    for (const [keys, mode, pending, label] of steps) {
+    for (const [keys, mode, pending, label, selection] of steps) {
       type(...keys);
       // Current without a render in between, even with no border label.
-      expect(status(editor)).toEqual({ mode, pending, label } as never);
+      expect(status(editor)).toEqual({
+        mode,
+        pending,
+        label,
+        ...(selection && { selection }),
+      } as never);
       const lines = editor.render(40);
       if (position === "none")
         expect([lines[0], lines.at(-1)]).toEqual(Array(2).fill("─".repeat(40)));
@@ -676,6 +699,55 @@ test.each(["bottom-right", "none"] as const)(
     }
   },
 );
+
+test.each([
+  ["ab\ncd", ["v", "k"], { kind: "char", anchor: 5, head: 1 }],
+  ["a😀b", ["0", "v", "l"], { kind: "char", anchor: 0, head: 3 }],
+  ["a\n\nb", ["g", "g", "j", "v"], { kind: "char", anchor: 2, head: 3 }],
+  [
+    "ab\ncd\nef",
+    ["g", "g", "l", "V", "j"],
+    { kind: "line", anchor: 1, head: 4 },
+  ],
+  [
+    "abcd\nx\nabcd",
+    ["g", "g", "l", "\x16", "j", "j", "l", "l"],
+    {
+      kind: "block",
+      anchor: 1,
+      head: 9,
+      spans: [
+        { from: 1, to: 3 },
+        { from: 6, to: 6 },
+        { from: 8, to: 10 },
+      ],
+    },
+  ],
+] as const)(
+  "publishes the Visual selection of %j as offsets into getText()",
+  (text, keys, selection) => {
+    const { editor, copies, type } = setup();
+    editor.setText(text);
+    type("\x1b", ...keys);
+    expect(status(editor)?.selection).toEqual(selection as never);
+    type("y");
+    expect(copies).toEqual([selectedText(text, selection)]);
+  },
+);
+
+/** What a published selection covers, which is what Vim yanks. */
+function selectedText(
+  text: string,
+  { kind, anchor, head, spans }: VimEditorSelection,
+): string {
+  const [from, to] = [Math.min(anchor, head), Math.max(anchor, head)];
+  if (kind === "char") return text.slice(from, to);
+  if (kind === "block")
+    return (spans ?? []).map((s) => text.slice(s.from, s.to)).join("\n");
+  const start = from === 0 ? 0 : text.lastIndexOf("\n", from - 1) + 1;
+  const end = text.indexOf("\n", to);
+  return text.slice(start, end === -1 ? text.length : end);
+}
 
 test("gwap tracks the cursor's text, preserves the register, and repeats with one-step undo", () => {
   const { editor, shared, copies, type } = setup();
@@ -777,7 +849,12 @@ test.each([
       let pending = "";
       for (const input of `${direction}foo`) {
         pending += input;
-        expect(key(input)).toEqual({ mode, pending, label: pending });
+        expect(key(input)).toEqual({
+          mode,
+          pending,
+          label: pending,
+          ...(visual && { selection: { kind: "char", anchor: 0, head: 1 } }),
+        });
         expect(editor.getCursor()).toEqual({ line: 0, col: 0 });
       }
       expect(key(finish)?.mode).toBe(mode);
@@ -956,7 +1033,7 @@ test("search history resets after submit and is private to each editor", () => {
 test("keeps one status per editor, back in INSERT after a submit", () => {
   const { editor, keybindings, shared, type } = setup();
   const published = capability(editor);
-  expect(published?.version).toBe(1);
+  expect(published?.version).toBe(2);
   expect(attach(editor, keybindings, shared)).toBe(true);
   expect(capability(editor)).toBe(published);
   editor.onSubmit = () => {};

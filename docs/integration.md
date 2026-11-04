@@ -39,13 +39,15 @@ A decorated editor publishes a read-only capability under
 
 ```ts
 const vim = (editor as Record<symbol, unknown>)[Symbol.for("pi-vim-editor")] as
-  | { version: 1; status(): { mode: string; pending: string; label: string } }
+  | { version: number; status(): { mode: string; pending: string; label: string } }
   | undefined;
 
-if (vim?.version === 1) {
+if (vim && vim.version >= 1) {
   const { mode, pending, label } = vim.status();
 }
 ```
+
+Version 2 adds `selection`. Version 1 fields keep their meaning.
 
 The capability is a frozen object on the editor instance. The property isn't
 writable, enumerable, or configurable. `status()` returns a new frozen
@@ -56,6 +58,7 @@ object on every call:
 | `mode` | `insert`, `normal`, `visual`, `visual-line`, `visual-block`, or `replace` |
 | `pending` | An unfinished command or search query, such as `2d`, `ci`, `"+`, `:q`, or `/text`; otherwise `""` |
 | `label` | The text of pi-vim-editor's own label: `pending` if it isn't empty, otherwise the mode name, such as `NORMAL` or `VISUAL LINE` |
+| `selection` | The Visual selection, only in a Visual mode. See [Read the selection](#read-the-selection). |
 
 The label is plain text without styling and stays available with
 `vimEditor.indicator: "none"`. pi-vim-editor's own border mutes
@@ -64,7 +67,30 @@ control characters, line breaks, and backslashes for safe single-line display;
 `pending` isn't a raw query API.
 
 The package also exports the TypeScript types `VimEditorCapability`,
-`VimEditorStatus`, and `VimEditorMode`.
+`VimEditorStatus`, `VimEditorMode`, and `VimEditorSelection`.
+
+## Read the selection
+
+From capability version 2, `status().selection` holds the Visual selection,
+so an extension that draws the prompt itself can highlight it. Offsets are
+UTF-16 offsets into `getText()`:
+
+```ts
+selection?: {
+  kind: "char" | "line" | "block";
+  anchor: number; // the fixed end
+  head: number; // the end that moves with the cursor
+  spans?: { from: number; to: number }[]; // block only
+};
+```
+
+| `kind` | Mode | What is selected |
+| --- | --- | --- |
+| `char` | `visual` | `getText().slice(min, max)` of `anchor` and `head`. The ends lie past the characters under the cursor and the anchor, so both count as selected. A selected empty line selects its line break. |
+| `line` | `visual-line` | Every whole line from the line of `min` to the line of `max`. `anchor` and `head` are the anchor's and the cursor's positions. |
+| `block` | `visual-block` | Each of `spans`, one per line from top to bottom. A line too short for the block has an empty span at its end. `anchor` and `head` are the anchor's and the cursor's positions. |
+
+The selected text is what `y` yanks.
 
 ## Keep it current
 

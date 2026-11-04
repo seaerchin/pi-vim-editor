@@ -19,6 +19,7 @@ import { textWidth } from "./reflow.js";
 export type {
   VimEditorCapability,
   VimEditorMode,
+  VimEditorSelection,
   VimEditorStatus,
 } from "./status.js";
 

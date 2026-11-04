@@ -676,7 +676,7 @@ export function attach(
     borders.bottom = { width, line };
     return line;
   };
-  publish(editor, () => statusOf(current()));
+  publish(editor, () => statusOf(current(), port.read));
   return true;
 }
 
